@@ -60,7 +60,7 @@
 <body>
 
 <canvas id="plate" width="1200" height="1000" tabindex="0" role="img"
-  aria-label="Fig. 10. The odd squares. A square of hand-lettered letters grows from one corner. Each L-shaped layer spells its own odd number: one, three, five, seven, up to thirteen. Every time a new L snaps around the corner, the letters make a square again, and the top line counts it up: 1 + 3 + 5 + 7 = 4 squared. At seven layers it peels back to one. Drag the red knob at the corner out or in to add or peel off layers. Arrow keys do the same."></canvas>
+  aria-label="Fig. 10. The odd squares. A square of hand-lettered letters grows from one corner. Each L-shaped layer spells its own odd number: one, three, five, seven, up to thirteen. Every time a new L snaps around the corner, the letters make a square again, and the top line counts it up: 1 + 3 + 5 + 7 = 4 squared. At seven layers it peels back to one. Drag the red knob at the corner out or in to add or peel off layers. Keep dragging past the corner and it never stops: the view zooms out, the words keep spelling bigger odd numbers, and once the letters are too small they become bands of ink. Arrow keys do the same."></canvas>
 
 <div class="controls">
   <button id="btn-sound" type="button">sound: off</button>
@@ -140,20 +140,32 @@ const paperPattern = g.createPattern(paper, "repeat");
 
 // The square: each unit is 3 by 3 letters, so layer k is an L of 2k - 1 units and 9(2k - 1) letters.
 // It grows from the top left corner; 7 layers make the 49-unit square.
-const C = 34, U = 3 * C, MAXN = 7, GRID = 3 * MAXN;
+// MAXN layers fit the plate at full size (the demo and the video stop there). Dragging past it
+// keeps going: the view eases out so the square always fits, and the layers only stop at CAP.
+const C = 34, U = 3 * C, MAXN = 7, CAP = 1000;
 const X0 = (S - MAXN * U) / 2, Y0 = 226;
-const WORDS = ["one", "three", "five", "seven", "nine", "eleven", "thirteen"];
+const ONES = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
+  "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"];
+const TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
+function say99(x) { return x < 20 ? ONES[x] : TENS[Math.floor(x / 10)] + (x % 10 ? " " + ONES[x % 10] : ""); }
+function words(x) {
+  if (x >= 1000) return words(Math.floor(x / 1000)) + " thousand" + (x % 1000 ? " " + words(x % 1000) : "");
+  if (x >= 100) return ONES[Math.floor(x / 100)] + " hundred" + (x % 100 ? " " + say99(x % 100) : "");
+  return say99(x);
+}
+const word = k => words(2 * k - 1);
 // every layer's letters spell its own word along the L: down the arm, left to right along the foot
 const LAYERS = [];
-for (let k = 1; k <= MAXN; k++) {
-  const word = k === 1 ? WORDS[0] : WORDS[k - 1] + " ";
+function layer(k) {
+  if (LAYERS[k]) return LAYERS[k];
+  const w = k === 1 ? "one" : word(k) + " ";
   const cells = [];
   for (let r = 0; r < 3 * k; r++) for (let c = 0; c < 3 * k; c++) {
     if (Math.max(Math.floor(r / 3), Math.floor(c / 3)) !== k - 1) continue;
-    const ch = word[(r >= 3 * (k - 1) ? c : r) % word.length];
-    cells.push({ r, c, ch, ph: ((c * 73 + r * 151) % 97) / 97 * 2 * Math.PI });
+    const ch = w[(r >= 3 * (k - 1) ? c : r) % w.length];
+    if (ch !== " ") cells.push({ r, c, ch, ph: ((c * 73 + r * 151) % 97) / 97 * 2 * Math.PI, i: (c * 31 + r * 17) % JN });
   }
-  LAYERS.push(cells);
+  return (LAYERS[k] = cells);
 }
 
 const LOOP = 16;
@@ -164,14 +176,17 @@ let demo = !reduced, recording = false, paused = false;
 
 // state
 let n = 1;                                            // layers showing
-const app = new Float32Array(MAXN + 1), appV = new Float32Array(MAXN + 1), landed = new Uint8Array(MAXN + 1);
+const app = new Float32Array(CAP + 2), appV = new Float32Array(CAP + 2), landed = new Uint8Array(CAP + 2);
+let topK = 1, view = MAXN;                            // highest layer still on screen; how many layers the view fits
 let pos = 1, vel = 0, hand = 1, notch = 1;            // the corner knob, in units
 let drag = false, settled = true;
 let shake = 0, hint = 1;
 let caption = "just one", capAt = -10;
 let clock = 0, loopStart = 0;
-const jx = new Float32Array(GRID * GRID), jy = new Float32Array(GRID * GRID);
-const jvx = new Float32Array(GRID * GRID), jvy = new Float32Array(GRID * GRID);
+// letters jolt on a shared set of springs, picked by a hash of the cell
+const JN = 441;
+const jx = new Float32Array(JN), jy = new Float32Array(JN);
+const jvx = new Float32Array(JN), jvy = new Float32Array(JN);
 let seed = 7;
 const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
 
@@ -188,17 +203,19 @@ function setCaption(s) { if (s !== caption) { caption = s; capAt = clock; } }
 const live = document.getElementById("live");
 const say = () => {
   const terms = [];
-  for (let k = 1; k <= n; k++) terms.push(2 * k - 1);
+  for (let k = 1; k <= n; k++) if (n <= MAXN || k <= 3 || k === n) terms.push(2 * k - 1);
+  if (n > MAXN) terms.splice(3, 0, "...");
   live.textContent = `${terms.join(" + ")} = ${n * n}, which is ${n} squared.`;
 };
 
 // ---------- the layers ----------
 function setN(k) {
-  k = Math.max(1, Math.min(MAXN, k));
+  k = Math.max(1, Math.min(CAP, k));
   if (k === n) return;
   if (k > n) {
     for (let j = n + 1; j <= k; j++) { app[j] = 0; appV[j] = 0; landed[j] = 0; }
-    setCaption("add " + WORDS[k - 1]);
+    topK = Math.max(topK, k);
+    setCaption("add " + word(k));
   } else {
     // each layer that peels off plays a falling note: a fast peel is a quick glissando
     for (let j = n; j > k; j--) sfx("peel", j);
@@ -211,8 +228,8 @@ function setN(k) {
 function land(k) {
   // the L clunks into place, then the square closes
   sfx("land", k);
-  slam(5 + k * 0.7);
-  jolt(3 + k * 0.4);
+  slam(Math.min(10, 5 + k * 0.7));
+  jolt(Math.min(6, 3 + k * 0.4) * zoom());
   setCaption("square again");
 }
 
@@ -228,13 +245,13 @@ function step(dt) {
   } else F = 260 * (notch - pos) - 15 * vel;
   vel += F * dt; pos += vel * dt;
   if (pos < 1) { pos = 1; vel = -vel * 0.3; }
-  if (pos > MAXN) { pos = MAXN; vel = -vel * 0.3; }
+  if (pos > CAP) { pos = CAP; vel = -vel * 0.3; }
   if (!demo) {
     const k = Math.round(pos);
     if (k !== n && Math.abs(pos - k) < 0.16) setN(k);
   }
   // each layer springs in from the corner with a little overshoot, or slides back out
-  for (let j = 1; j <= MAXN; j++) {
+  for (let j = 1; j <= topK; j++) {
     const target = j <= n ? 1 : 0;
     appV[j] += ((target ? 300 : 500) * (target - app[j]) - (target ? 16 : 40) * appV[j]) * dt;
     app[j] += appV[j] * dt;
@@ -248,7 +265,10 @@ function step(dt) {
     jvy[i] = (jvy[i] - kj * jy[i] * dt) * damp; jy[i] += jvy[i] * dt;
   }
   shake *= Math.exp(-11 * dt);
-  // the drag hint fades out while held, or when the square can't grow any more
+  while (topK > n && app[topK] <= 0.002) topK--;
+  // past MAXN the view eases out after the knob, so the square always fits the plate
+  view += ((demo ? MAXN : Math.max(MAXN, pos)) - view) * Math.min(1, dt * 2.5);
+  // the drag hint fades out while held, or once the square fills the plate
   hint += ((drag || n >= MAXN ? 0 : 1) - hint) * Math.min(1, dt * 6);
 }
 
@@ -383,18 +403,24 @@ function duck(t) {
   musicBus.gain.setTargetAtTime(0.28, t, 0.02);
   musicBus.gain.setTargetAtTime(0.5, t + 0.2, 0.15);
 }
+let lastLand = -1, lastChime = -1, lastPeel = -1;
 function sfx(kind, arg, at) {
   // while rendering the video, sounds are only logged; renderAudio plays them back offline
   if (recording) { if (logT !== null) events.push([kind, arg, logT]); return; }
   if (!ac || muted) return;
   const t = at ?? ac.currentTime + 0.005;
   if (kind === "land") {
-    // the block climbs a step on the scale for each layer; the chime is the square closing
-    block(midi(pent(63, arg + 3)), t, 0.32);
-    chime(t + 0.2);
+    // the block climbs a step on the scale for each layer (wrapping every two octaves);
+    // the chime is the square closing. A fast run of landings thins out so it never buzzes.
+    if (t - lastLand < 0.07) return;
+    lastLand = t;
+    block(midi(pent(63, 5 + (arg - 2 + 1000) % 10)), t, 0.32);
+    if (t - lastChime > 0.4) { lastChime = t; chime(t + 0.2); }
     duck(t);
   } else if (kind === "peel") {
-    toy(sfxBus, midi(pent(75, arg + 1)), t, 0.09, 0.4);
+    if (t - lastPeel < 0.05) return;
+    lastPeel = t;
+    toy(sfxBus, midi(pent(75, 3 + (arg - 2 + 1000) % 10)), t, 0.09, 0.4);
   }
 }
 
@@ -420,6 +446,8 @@ function drawHeader(t, still) {
   // the fact as math: each term wears its own L's colour, the newest and the square are warm
   const parts = [];
   for (let k = 1; k <= n; k++) {
+    // past 7 terms the middle folds into dots: 1 + 3 + 5 + ... + 39
+    if (n > MAXN && k > 3 && k < n) { if (k === 4) parts.push([" + ...", LABEL]); continue; }
     if (k > 1) parts.push([" + ", LABEL]);
     parts.push([String(2 * k - 1), k === n ? RED : BLUES[(k - 1) % 2]]);
   }
@@ -465,31 +493,45 @@ function drawHeader(t, still) {
   g.restore();
 }
 
+const zoom = () => Math.min(1, MAXN / view);
 function drawSquare(t, still) {
+  const z = zoom(), cz = C * z, uz = U * z;
+  // letters while they're big enough to read; below that each L becomes a band of its ink
+  const lettersA = Math.max(0, Math.min(1, (cz - 9) / 4));
   g.textAlign = "center";
   g.textBaseline = "middle";
-  g.font = `700 ${C}px ${FONT}`;
-  g.lineWidth = 2; g.lineJoin = "round";
-  for (let k = 1; k <= MAXN; k++) {
+  g.font = `700 ${cz}px ${FONT}`;
+  g.lineWidth = 2 * z; g.lineJoin = "round";
+  for (let k = 1; k <= topK; k++) {
     const a = app[k];
     if (a <= 0.002) continue;
     // a new L slides in from beyond the corner; a peeled one slides back out
-    const off = (1 - a) * 80;
+    const off = (1 - a) * 80 * Math.max(z, 0.25);
     const fade = Math.max(0, Math.min(1, a * 1.6));
     const warm = k === n;
-    for (const { r, c, ch, ph } of LAYERS[k - 1]) {
-      if (ch === " ") continue;
-      const i = c + r * GRID;
+    if (lettersA < 1) {
+      // a band: the arm and the foot, with a hair of paper between layers while there's room
+      const gap = uz > 5 ? uz * 0.16 : 0;
+      const wave = 0.5 + 0.5 * Math.sin(t * SHIM * still);
+      g.fillStyle = warm ? WARM[Math.min(4, Math.floor(wave ** 1.6 * 5))] : BLUES[(k - 1) % 2];
+      g.globalAlpha = fade * (1 - lettersA) * (0.85 - 0.15 * still * (0.5 + 0.5 * Math.sin(t * BREATH + k * 0.7)));
+      const x0 = X0 + off, y0 = Y0 + off, e = (k - 1) * uz;
+      g.fillRect(x0 + e + gap / 2, y0, uz - gap, e + gap / 2);
+      g.fillRect(x0, y0 + e + gap / 2, k * uz - gap / 2, uz - gap);
+    }
+    if (lettersA <= 0) continue;
+    for (const { r, c, ch, ph, i } of layer(k)) {
       let col;
       if (warm) {
         const wave = 0.5 + 0.5 * Math.sin(t * SHIM * still - c * 0.16 + r * 0.3);
         col = WARM[Math.min(4, Math.floor(wave ** 1.6 * 5))];
       } else col = BLUES[(k - 1) % 2];
       // ink breathing only: on a figure this dense, letter wobble reads as shaking
-      g.globalAlpha = fade * (1 - 0.25 * still * (0.5 + 0.5 * Math.sin(t * BREATH + ph)));
+      g.globalAlpha = lettersA * fade * (1 - 0.25 * still * (0.5 + 0.5 * Math.sin(t * BREATH + ph)));
       g.fillStyle = col; g.strokeStyle = col;
-      const px = X0 + (c + 0.5) * C + off + jx[i], py = Y0 + (r + 0.5) * C + off + jy[i];
-      g.strokeText(ch, px, py + 1);
+      const px = X0 + (c + 0.5) * cz + off + jx[i] * z, py = Y0 + (r + 0.5) * cz + off + jy[i] * z;
+      // the outline stroke thickens big letters; small ones skip it to keep frames light
+      if (z > 0.6) g.strokeText(ch, px, py + 1);
       g.fillText(ch, px, py + 1);
     }
   }
@@ -497,7 +539,7 @@ function drawSquare(t, still) {
 }
 
 function drawKnob(t, still) {
-  const d = pos * U + 16;
+  const d = pos * U * zoom() + 16;
   // a pale, ghostly dashed arrow pointing out from the knob: drag me this way
   if (hint > 0.01) {
     const k = Math.SQRT1_2, a0 = 30, a1 = 100;
@@ -588,7 +630,8 @@ function toCanvas(e) {
   return [(e.clientX - b.left) * S / b.width, (e.clientY - b.top) * H / b.height];
 }
 // the hand's reach along the diagonal, in units
-const handAt = (px, py) => Math.max(0.6, Math.min(MAXN + 0.4, ((px - X0) + (py - Y0)) / 2 / U));
+// past MAXN the reach is measured in the zoomed-out view, so holding past the corner keeps it growing
+const handAt = (px, py) => Math.max(0.6, Math.min(CAP, ((px - X0) + (py - Y0)) / 2 / (U * zoom())));
 function stopDemo() {
   if (!demo) return;
   demo = false;
@@ -611,7 +654,7 @@ cv.addEventListener("pointermove", e => {
 function release() {
   if (!drag) return;
   // it goes where the hand let go, however far behind the heavy knob still is
-  notch = Math.max(1, Math.min(MAXN, Math.round(hand)));
+  notch = Math.max(1, Math.min(CAP, Math.round(hand)));
   drag = false;
 }
 cv.addEventListener("pointerup", release);
@@ -622,7 +665,7 @@ cv.addEventListener("keydown", e => {
   e.preventDefault();
   audioInit();
   stopDemo();
-  notch = Math.max(1, Math.min(MAXN, notch + m));
+  notch = Math.max(1, Math.min(CAP, notch + m));
 });
 document.getElementById("btn-replay").onclick = () => {
   demo = !reduced;

@@ -18,7 +18,7 @@ python3 -m http.server 8792 --bind 127.0.0.1
 
 Then open http://127.0.0.1:8792/.
 
-Drag the red knob at the corner out or in, or use the arrow keys. Touch it once to start the music. The `sound` button mutes it. Reduced motion turns off the demo and the breathing ink and shows four layers.
+Drag the red knob at the corner out or in, or use the arrow keys. Hold it past the corner and it keeps going (up to 1000 layers): the view zooms out, the words keep counting (twenty one, forty three...), and when the letters get too small each L turns into a band of its ink. Touch it once to start the music. The `sound` button mutes it. Reduced motion turns off the demo and the breathing ink and shows four layers.
 
 Re-render the video from the series' `design/` folder with `python3 tools/export.py ../odd-squares/index.html`. Headless Chrome steps `index.html?render` one frame at a time and the page renders its audio offline.
 
