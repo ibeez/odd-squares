@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>The Odd Squares, Fig. 10</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&display=swap">
+<style>
+  :root {
+    --paper: #fbf5e6;
+    --label: #48545c; /* Blue Grey B47 */
+    --hand: "Gaegu", "Comic Sans MS", "Chalkboard SE", cursive;
+    color-scheme: light;
+  }
+  html, body { background: var(--paper); color: var(--label); }
+  body {
+    margin: 0;
+    min-height: 100%;
+    font-family: var(--hand);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-block: 24px 40px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    gap: 14px;
+  }
+  canvas {
+    width: min(100%, 760px);
+    aspect-ratio: 1200 / 1000;
+    max-width: 100%;
+    display: block;
+    touch-action: none;
+    cursor: grab;
+  }
+  canvas:active { cursor: grabbing; }
+  canvas:focus-visible { outline: 2px solid #0846a9; outline-offset: 4px; }
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  .controls button {
+    font: 700 18px/1 var(--hand);
+    color: var(--label);
+    background: transparent;
+    border: 1.5px solid var(--label);
+    border-radius: 10px;
+    padding: 8px 14px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .controls button:hover { background: rgba(72, 84, 92, 0.08); }
+  .controls button:focus-visible { outline: 2px solid #0846a9; outline-offset: 2px; }
+  .sr {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip: rect(0 0 0 0); white-space: nowrap;
+  }
+  .sr:focus { position: static; width: auto; height: auto; clip: auto; }
+</style>
+</head>
+<body>
+
+<canvas id="plate" width="1200" height="1000" tabindex="0" role="img"
+  aria-label="Fig. 10. The odd squares. A square of hand-lettered letters grows from one corner. Each L-shaped layer spells its own odd number: one, three, five, seven, up to thirteen. Every time a new L snaps around the corner, the letters make a square again, and the top line counts it up: 1 + 3 + 5 + 7 = 4 squared. At seven layers it peels back to one. Drag the red knob at the corner out or in to add or peel off layers. Arrow keys do the same."></canvas>
+
+<div class="controls">
+  <button id="btn-sound" type="button">sound: off</button>
+  <button class="sr" id="btn-replay" type="button">Replay the demo</button>
+  <button class="sr" id="btn-pause" type="button">Pause</button>
+</div>
+<div class="sr" aria-live="polite" id="live"></div>
+
+<script src="palette.js"></script>
+<script>
+// export settings for ../design/tools/export.py
+const EXPORT = { format: "mp4", width: 1200, height: 1000, fps: 30, seconds: 16, loop: true, sound: true, background: "paper" };
+
+const M = window.MARKERS;
+const PAPER = "#fbf5e6";
+const LABEL = M["Blue Grey B47"];
+const RED = M["POSCA Tomato Red"];
+const ORANGE = M["POSCA Orange"];
+// shimmer ramp for the newest L, same warm ramp as Figs. 06 and 07
+const WARM = [M["POSCA Tomato Red"], M["Warm Coral 208"], M["POSCA Orange"], M["Light Cantaloupe 275"], M["Warm Coral 208"]];
+// settled layers alternate two blues, so each L reads as its own part
+const BLUES = [M["POSCA Indigo"], M["Dark Blue Light 15"]];
+const FONT = '"Gaegu", "Comic Sans MS", "Chalkboard SE", cursive';
+
+const cv = document.getElementById("plate");
+const g = cv.getContext("2d");
+const S = 1200, H = 1000;
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+cv.width = S * DPR; cv.height = H * DPR;
+g.scale(DPR, DPR);
+
+// Paper: one seamless tile behind the whole page, same as Fig. 03. The canvas only paints it when recording.
+const TILE = 420;
+const paper = (() => {
+  const c = document.createElement("canvas");
+  c.width = TILE; c.height = TILE;
+  const p = c.getContext("2d");
+  p.fillStyle = PAPER;
+  p.fillRect(0, 0, TILE, TILE);
+  const img = p.getImageData(0, 0, TILE, TILE), d = img.data;
+  let seed = 42;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const blot = [];
+  for (let i = 0; i < 6; i++) blot.push([rnd() * TILE, rnd() * TILE, 60 + rnd() * 110, rnd() < 0.5 ? -1 : 1]);
+  for (let y = 0; y < TILE; y++) {
+    for (let x = 0; x < TILE; x++) {
+      let n = (rnd() - 0.5) * 11;
+      for (const [bx, by, br, s] of blot) {
+        let dx = Math.abs(x - bx), dy = Math.abs(y - by);
+        dx = Math.min(dx, TILE - dx); dy = Math.min(dy, TILE - dy);
+        const q = (dx * dx + dy * dy) / (br * br);
+        if (q < 1) n += s * 4 * (1 - q);
+      }
+      const idx = (x + y * TILE) * 4;
+      d[idx] += n; d[idx + 1] += n; d[idx + 2] += n * 1.1;
+    }
+  }
+  p.putImageData(img, 0, 0);
+  p.lineCap = "round";
+  for (let i = 0; i < 220; i++) {
+    const x = rnd() * TILE, y = rnd() * TILE, a = rnd() * Math.PI, l = 4 + rnd() * 12;
+    const mx = (rnd() - 0.5) * 3, my = (rnd() - 0.5) * 3;
+    p.strokeStyle = rnd() < 0.6 ? "rgba(120,100,70,0.09)" : "rgba(255,255,255,0.45)";
+    p.lineWidth = 0.6 + rnd() * 0.7;
+    for (const ox of [-TILE, 0, TILE]) for (const oy of [-TILE, 0, TILE]) {
+      p.beginPath();
+      p.moveTo(x + ox, y + oy);
+      p.quadraticCurveTo(x + ox + Math.cos(a) * l * 0.5 + mx, y + oy + Math.sin(a) * l * 0.5 + my, x + ox + Math.cos(a) * l, y + oy + Math.sin(a) * l);
+      p.stroke();
+    }
+  }
+  return c;
+})();
+document.documentElement.style.background = `${PAPER} url(${paper.toDataURL()}) repeat`;
+document.body.style.background = "transparent";
+const paperPattern = g.createPattern(paper, "repeat");
+
+// The square: each unit is 3 by 3 letters, so layer k is an L of 2k - 1 units and 9(2k - 1) letters.
+// It grows from the top left corner; 7 layers make the 49-unit square.
+const C = 34, U = 3 * C, MAXN = 7, GRID = 3 * MAXN;
+const X0 = (S - MAXN * U) / 2, Y0 = 226;
+const WORDS = ["one", "three", "five", "seven", "nine", "eleven", "thirteen"];
+// every layer's letters spell its own word along the L: down the arm, left to right along the foot
+const LAYERS = [];
+for (let k = 1; k <= MAXN; k++) {
+  const word = k === 1 ? WORDS[0] : WORDS[k - 1] + " ";
+  const cells = [];
+  for (let r = 0; r < 3 * k; r++) for (let c = 0; c < 3 * k; c++) {
+    if (Math.max(Math.floor(r / 3), Math.floor(c / 3)) !== k - 1) continue;
+    const ch = word[(r >= 3 * (k - 1) ? c : r) % word.length];
+    cells.push({ r, c, ch, ph: ((c * 73 + r * 151) % 97) / 97 * 2 * Math.PI });
+  }
+  LAYERS.push(cells);
+}
+
+const LOOP = 16;
+const TICK = 1 / 240;
+const BREATH = (2 * Math.PI * 3) / LOOP, SHIM = (2 * Math.PI * 4) / LOOP, BEAT = (2 * Math.PI * 24) / LOOP;
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+let demo = !reduced, recording = false, paused = false;
+
+// state
+let n = 1;                                            // layers showing
+const app = new Float32Array(MAXN + 1), appV = new Float32Array(MAXN + 1), landed = new Uint8Array(MAXN + 1);
+let pos = 1, vel = 0, hand = 1, notch = 1;            // the corner knob, in units
+let drag = false, settled = true;
+let shake = 0, hint = 1;
+let caption = "just one", capAt = -10;
+let clock = 0, loopStart = 0;
+const jx = new Float32Array(GRID * GRID), jy = new Float32Array(GRID * GRID);
+const jvx = new Float32Array(GRID * GRID), jvy = new Float32Array(GRID * GRID);
+let seed = 7;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+
+function jolt(amp) {
+  if (reduced) return;
+  for (let i = 0; i < jx.length; i++) {
+    jvx[i] += (rnd() - 0.5) * amp * 30;
+    jvy[i] -= (0.3 + rnd()) * amp * 30;
+  }
+}
+function slam(power) { if (!reduced) shake = Math.max(shake, power); }
+function setCaption(s) { if (s !== caption) { caption = s; capAt = clock; } }
+
+const live = document.getElementById("live");
+const say = () => {
+  const terms = [];
+  for (let k = 1; k <= n; k++) terms.push(2 * k - 1);
+  live.textContent = `${terms.join(" + ")} = ${n * n}, which is ${n} squared.`;
+};
+
+// ---------- the layers ----------
+function setN(k) {
+  k = Math.max(1, Math.min(MAXN, k));
+  if (k === n) return;
+  if (k > n) {
+    for (let j = n + 1; j <= k; j++) { app[j] = 0; appV[j] = 0; landed[j] = 0; }
+    setCaption("add " + WORDS[k - 1]);
+  } else {
+    // each layer that peels off plays a falling note: a fast peel is a quick glissando
+    for (let j = n; j > k; j--) sfx("peel", j);
+    jolt(2);
+    setCaption(k === 1 ? "back to one" : "peel back");
+  }
+  n = k;
+  say();
+}
+function land(k) {
+  // the L clunks into place, then the square closes
+  sfx("land", k);
+  slam(5 + k * 0.7);
+  jolt(3 + k * 0.4);
+  setCaption("square again");
+}
+
+// ---------- physics ----------
+function step(dt) {
+  // the knob: heavy. Held, it trails the hand on a soft spring and catches a little at each layer.
+  // Let go, it slides to the layer where the hand let go and clunks in.
+  let F;
+  if (demo) F = 160 * (hand - pos) - 18 * vel;
+  else if (drag) {
+    const near = Math.round(pos);
+    F = 34 * (hand - pos) - 8 * vel - 26 * (pos - near) * (Math.abs(hand - pos) < 0.6 ? 1 : 0.35);
+  } else F = 260 * (notch - pos) - 15 * vel;
+  vel += F * dt; pos += vel * dt;
+  if (pos < 1) { pos = 1; vel = -vel * 0.3; }
+  if (pos > MAXN) { pos = MAXN; vel = -vel * 0.3; }
+  if (!demo) {
+    const k = Math.round(pos);
+    if (k !== n && Math.abs(pos - k) < 0.16) setN(k);
+  }
+  // each layer springs in from the corner with a little overshoot, or slides back out
+  for (let j = 1; j <= MAXN; j++) {
+    const target = j <= n ? 1 : 0;
+    appV[j] += ((target ? 300 : 500) * (target - app[j]) - (target ? 16 : 40) * appV[j]) * dt;
+    app[j] += appV[j] * dt;
+    if (target && !landed[j] && app[j] >= 1) { landed[j] = 1; land(j); }
+    if (!target) { landed[j] = 0; if (app[j] < 0) { app[j] = 0; appV[j] = 0; } }
+  }
+  // letters spring back into their own cells
+  const kj = 420, damp = Math.exp(-13 * dt);
+  for (let i = 0; i < jx.length; i++) {
+    jvx[i] = (jvx[i] - kj * jx[i] * dt) * damp; jx[i] += jvx[i] * dt;
+    jvy[i] = (jvy[i] - kj * jy[i] * dt) * damp; jy[i] += jvy[i] * dt;
+  }
+  shake *= Math.exp(-11 * dt);
+  // the drag hint fades out while held, or when the square can't grow any more
+  hint += ((drag || n >= MAXN ? 0 : 1) - hint) * Math.min(1, dt * 6);
+}
+
+// ---------- the ghost demo ----------
+// One seamless 16 s loop at 90 BPM. An L lands every 3 beats from beat 2, the square holds at 7,
+// then peels back to one fast and rests there until the loop comes round.
+const GROW = [1.2, 3.2, 5.2, 7.2, 9.2, 11.2];          // n becomes 2..7, landing about on the beat
+const PEEL = 13.333, PEEL_STEP = 0.13;
+function demoN(t) {
+  if (t >= PEEL) return Math.max(1, MAXN - 1 - Math.floor((t - PEEL) / PEEL_STEP));
+  let k = 1;
+  for (const tg of GROW) if (t >= tg) k++;
+  return k;
+}
+
+// ---------- sound: all synthesized, original, soft ----------
+// A toy piano in E flat, 90 BPM, six bars of eighths: exactly the 16 s loop.
+let ac = null, master, musicBus, sfxBus, noise, timer = null;
+let muted = false;
+let logT = null;
+const events = [];
+const midi = m => 440 * Math.pow(2, (m - 69) / 12);
+const PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+const N = s => s === "-" ? null : 12 * (+s.slice(s[1] === "b" ? 2 : 1) + 1) + PC[s[0]] - (s[1] === "b" ? 1 : 0);
+const MEL = [
+  "G5 - Bb5 - G5 F5 Eb5 -", "C6 - Bb5 - G5 - - -", "G5 Bb5 C6 - Bb5 G5 F5 -",
+  "F5 - Bb4 - F5 G5 F5 -", "Eb5 F5 G5 - C6 - Bb5 -", "G5 - F5 - Bb4 - - -"
+].map(b => b.split(" ").map(N));
+const ROOTS = ["Eb3", "Ab2", "C3", "Bb2", "Ab2", "Bb2"].map(N);
+const CHORDS = [[63, 67, 70], [60, 63, 68], [60, 63, 67], [62, 65, 70], [60, 63, 68], [62, 65, 70]];
+const EIGHTH = 60 / 90 / 2, STEPS = MEL.length * 8;
+const LADDER = [0, 2, 4, 7, 9];                       // E flat major pentatonic: Eb F G Bb C
+const pent = (base, i) => base + 12 * Math.floor(i / 5) + LADDER[i % 5];
+
+// the whole sound graph, built on whatever context `ac` is: live, or offline for the video
+function buildGraph() {
+  const comp = ac.createDynamicsCompressor();
+  comp.threshold.value = -16; comp.ratio.value = 5;
+  master = ac.createGain(); master.gain.value = muted ? 0 : 0.9;
+  master.connect(comp); comp.connect(ac.destination);
+  musicBus = ac.createGain(); musicBus.gain.value = 0.5; musicBus.connect(master);
+  // a small wooden room
+  const verb = ac.createConvolver(), wet = ac.createGain();
+  const len = ac.sampleRate * 1.8, ir = ac.createBuffer(2, len, ac.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = ir.getChannelData(ch);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
+  }
+  verb.buffer = ir; wet.gain.value = 0.3;
+  sfxBus = ac.createGain(); sfxBus.gain.value = 0.9; sfxBus.connect(master);
+  musicBus.connect(verb); sfxBus.connect(verb); verb.connect(wet); wet.connect(master);
+  noise = ac.createBuffer(1, ac.sampleRate * 0.3, ac.sampleRate);
+  const d = noise.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+}
+
+function audioInit() {
+  if (ac) { ac.resume(); return; }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  ac = new AC();
+  buildGraph();
+  // the button says off until the first touch actually starts the sound
+  if (!muted) btnSound.textContent = "sound: on";
+  let stepI = 0, next = ac.currentTime + 0.12;
+  timer = setInterval(() => {
+    while (next < ac.currentTime + 0.12) { music(stepI, next); stepI = (stepI + 1) % STEPS; next += EIGHTH; }
+  }, 25);
+}
+
+function env(e, t, vol, dur) {
+  e.gain.setValueAtTime(0.0001, t);
+  e.gain.exponentialRampToValueAtTime(vol, t + 0.003);
+  e.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+}
+// toy piano: a struck metal tine. A sine that rings, a quick inharmonic ping above it, a little octave.
+function toy(bus, f, t, vol, dur = 1.1) {
+  for (const [mul, v, d, wave] of [[1, 1, dur, "sine"], [4.2, 0.2, 0.12, "sine"], [2, 0.12, dur * 0.4, "triangle"]]) {
+    const o = ac.createOscillator(), e = ac.createGain();
+    o.type = wave; o.frequency.value = f * mul;
+    env(e, t, vol * v, d);
+    o.connect(e); e.connect(bus);
+    o.start(t); o.stop(t + d + 0.05);
+  }
+}
+// wooden block: a short hollow knock that drops a hair in pitch, plus a click of noise
+function block(f, t, vol) {
+  const o = ac.createOscillator(), e = ac.createGain();
+  o.type = "triangle";
+  o.frequency.setValueAtTime(f, t);
+  o.frequency.exponentialRampToValueAtTime(f * 0.92, t + 0.04);
+  env(e, t, vol, 0.11);
+  o.connect(e); e.connect(sfxBus);
+  o.start(t); o.stop(t + 0.15);
+  const s = ac.createBufferSource(), bp = ac.createBiquadFilter(), ne = ac.createGain();
+  s.buffer = noise; bp.type = "bandpass"; bp.frequency.value = f * 2.5; bp.Q.value = 3;
+  env(ne, t, vol * 0.6, 0.025);
+  s.connect(bp); bp.connect(ne); ne.connect(sfxBus);
+  s.start(t); s.stop(t + 0.04);
+}
+// soft chime: the home chord, strummed upward, bell-like and long
+function chime(t) {
+  [75, 79, 82, 87].forEach((m, i) => {
+    const tt = t + i * 0.03;
+    for (const [mul, v, d] of [[1, 1, 1.8], [2.76, 0.15, 0.5]]) {
+      const o = ac.createOscillator(), e = ac.createGain();
+      o.type = "sine"; o.frequency.value = midi(m) * mul;
+      env(e, tt, 0.05 * v, d);
+      o.connect(e); e.connect(sfxBus);
+      o.start(tt); o.stop(tt + d + 0.05);
+    }
+  });
+}
+function music(i, t) {
+  const bar = i >> 3, s = i & 7;
+  const m = MEL[bar][s];
+  if (m) toy(musicBus, midi(m), t, 0.11);
+  // left hand: the chord, softly, on beats 2 and 4
+  if (s === 2 || s === 6) for (const c of CHORDS[bar]) toy(musicBus, midi(c), t, 0.035, 0.7);
+  if (s === 0 || s === 4) {
+    const o = ac.createOscillator(), e = ac.createGain();
+    o.type = "sine"; o.frequency.value = midi(ROOTS[bar]);
+    e.gain.setValueAtTime(0, t);
+    e.gain.linearRampToValueAtTime(0.14, t + 0.03);
+    e.gain.exponentialRampToValueAtTime(0.0001, t + 4 * EIGHTH);
+    o.connect(e); e.connect(musicBus);
+    o.start(t); o.stop(t + 4 * EIGHTH + 0.05);
+  }
+}
+function duck(t) {
+  musicBus.gain.cancelScheduledValues(t);
+  musicBus.gain.setTargetAtTime(0.28, t, 0.02);
+  musicBus.gain.setTargetAtTime(0.5, t + 0.2, 0.15);
+}
+function sfx(kind, arg, at) {
+  // while rendering the video, sounds are only logged; renderAudio plays them back offline
+  if (recording) { if (logT !== null) events.push([kind, arg, logT]); return; }
+  if (!ac || muted) return;
+  const t = at ?? ac.currentTime + 0.005;
+  if (kind === "land") {
+    // the block climbs a step on the scale for each layer; the chime is the square closing
+    block(midi(pent(63, arg + 3)), t, 0.32);
+    chime(t + 0.2);
+    duck(t);
+  } else if (kind === "peel") {
+    toy(sfxBus, midi(pent(75, arg + 1)), t, 0.09, 0.4);
+  }
+}
+
+const btnSound = document.getElementById("btn-sound");
+btnSound.onclick = () => {
+  if (!ac) { audioInit(); return; }
+  muted = !muted;
+  if (master) master.gain.setTargetAtTime(muted ? 0 : 0.9, ac.currentTime, 0.03);
+  btnSound.textContent = muted ? "sound: off" : "sound: on";
+};
+
+// ---------- drawing ----------
+const pop = x => x >= 1 ? 1 : 1 + 2.7 * Math.pow(x - 1, 3) + 1.7 * Math.pow(x - 1, 2);
+
+function drawHeader(t, still) {
+  g.textBaseline = "alphabetic";
+  g.textAlign = "left";
+  g.font = `400 24px ${FONT}`;
+  g.globalAlpha = 0.7;
+  g.fillStyle = LABEL;
+  g.fillText("Fig. 10", 44, 62);
+  g.globalAlpha = 1;
+  // the fact as math: each term wears its own L's colour, the newest and the square are warm
+  const parts = [];
+  for (let k = 1; k <= n; k++) {
+    if (k > 1) parts.push([" + ", LABEL]);
+    parts.push([String(2 * k - 1), k === n ? RED : BLUES[(k - 1) % 2]]);
+  }
+  parts.push([" = ", LABEL], [String(n), RED]);
+  let size = 66;
+  const measure = () => {
+    g.font = `700 ${size}px ${FONT}`;
+    let w = 0;
+    for (const [s] of parts) w += g.measureText(s).width;
+    g.font = `700 ${size * 0.6}px ${FONT}`;
+    return w + g.measureText("2").width + 2;
+  };
+  let w = measure();
+  // the long sums shrink to stay clear of the Fig label
+  if (w > S - 320) { size *= (S - 320) / w; w = measure(); }
+  let x = S / 2 - w / 2;
+  g.font = `700 ${size}px ${FONT}`;
+  parts.forEach(([s, col], i) => {
+    const pw = g.measureText(s).width;
+    // the heartbeat, staggered left to right, one per beat
+    const b = 1 + 0.035 * still * Math.pow(Math.max(0, Math.sin(t * BEAT - i * 0.25)), 6);
+    g.save();
+    g.translate(x + pw / 2, 96);
+    g.scale(b, b);
+    g.fillStyle = col;
+    g.textAlign = "center";
+    g.fillText(s, 0, 0);
+    g.restore();
+    x += pw;
+  });
+  g.font = `700 ${size * 0.6}px ${FONT}`;
+  g.fillStyle = RED;
+  g.fillText("2", x + 2, 96 - size * 0.4);
+  // the status line pops in at each beat of the story
+  const p = pop(Math.min(1, (clock - capAt) / 0.38));
+  g.save();
+  g.translate(S / 2, 158);
+  g.scale(p, p);
+  g.textAlign = "center";
+  g.font = `700 34px ${FONT}`;
+  g.fillStyle = ORANGE;
+  g.fillText(caption, 0, 0);
+  g.restore();
+}
+
+function drawSquare(t, still) {
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.font = `700 ${C}px ${FONT}`;
+  g.lineWidth = 2; g.lineJoin = "round";
+  for (let k = 1; k <= MAXN; k++) {
+    const a = app[k];
+    if (a <= 0.002) continue;
+    // a new L slides in from beyond the corner; a peeled one slides back out
+    const off = (1 - a) * 80;
+    const fade = Math.max(0, Math.min(1, a * 1.6));
+    const warm = k === n;
+    for (const { r, c, ch, ph } of LAYERS[k - 1]) {
+      if (ch === " ") continue;
+      const i = c + r * GRID;
+      let col;
+      if (warm) {
+        const wave = 0.5 + 0.5 * Math.sin(t * SHIM * still - c * 0.16 + r * 0.3);
+        col = WARM[Math.min(4, Math.floor(wave ** 1.6 * 5))];
+      } else col = BLUES[(k - 1) % 2];
+      // ink breathing only: on a figure this dense, letter wobble reads as shaking
+      g.globalAlpha = fade * (1 - 0.25 * still * (0.5 + 0.5 * Math.sin(t * BREATH + ph)));
+      g.fillStyle = col; g.strokeStyle = col;
+      const px = X0 + (c + 0.5) * C + off + jx[i], py = Y0 + (r + 0.5) * C + off + jy[i];
+      g.strokeText(ch, px, py + 1);
+      g.fillText(ch, px, py + 1);
+    }
+  }
+  g.globalAlpha = 1;
+}
+
+function drawKnob(t, still) {
+  const d = pos * U + 16;
+  // a pale, ghostly dashed arrow pointing out from the knob: drag me this way
+  if (hint > 0.01) {
+    const k = Math.SQRT1_2, a0 = 30, a1 = 100;
+    g.save();
+    g.globalAlpha = hint * (0.36 - 0.08 * still * (0.5 + 0.5 * Math.sin(t * BREATH)));
+    g.strokeStyle = LABEL; g.lineWidth = 3; g.lineCap = "round"; g.lineJoin = "round";
+    g.setLineDash([8, 9]);
+    g.beginPath(); g.moveTo(X0 + d + a0 * k, Y0 + d + a0 * k); g.lineTo(X0 + d + a1 * k, Y0 + d + a1 * k); g.stroke();
+    g.setLineDash([]);
+    const ex = X0 + d + a1 * k, ey = Y0 + d + a1 * k;
+    g.beginPath(); g.moveTo(ex - 16, ey); g.lineTo(ex, ey); g.lineTo(ex, ey - 16); g.stroke();
+    g.restore();
+  }
+  g.fillStyle = RED;
+  g.beginPath(); g.arc(X0 + d, Y0 + d, drag ? 17 : 14, 0, Math.PI * 2); g.fill();
+}
+
+function paint(t, still) {
+  g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  g.clearRect(0, 0, S, H);
+  if (recording) { g.fillStyle = paperPattern; g.fillRect(0, 0, S, H); }
+  g.translate(shake * Math.sin(t * 91.7), shake * Math.cos(t * 77.3));
+  drawHeader(t, still);
+  drawSquare(t, still);
+  drawKnob(t, still);
+}
+
+// ---------- loop ----------
+function tick() {
+  if (demo && !drag) {
+    const k = demoN(((clock - loopStart) % LOOP + LOOP) % LOOP);
+    if (k !== n) setN(k);
+    hand = n;
+  }
+  step(TICK);
+  clock += TICK;
+}
+let last = null;
+function frame(ms) {
+  const dt = last === null ? 0 : Math.min(1 / 20, (ms - last) / 1000);
+  last = ms;
+  if (!paused) { const to = clock + dt; while (clock < to - TICK / 2) tick(); }
+  const still = reduced ? 0 : 1;
+  paint(clock - loopStart, still);
+  requestAnimationFrame(frame);
+}
+
+// ---------- video ----------
+// ?render: one silent lap so frame 0 matches the last frame, then the recorded lap for tools/export.py.
+// Sounds from the recorded lap are logged with their times, then played offline with the music.
+function advance(to, log) {
+  while (clock < to - TICK / 2) { logT = log ? clock - LOOP : null; tick(); }
+  logT = null;
+  paint(clock, 1);
+}
+async function render() {
+  recording = true; demo = true; loopStart = 0;
+  for (let i = 0; i < LOOP * EXPORT.fps; i++) advance(i / EXPORT.fps, false);
+  await ExportPage.run(cv, p => advance(LOOP * (1 + p), true), EXPORT, { audio: renderAudio });
+}
+async function renderAudio() {
+  const SR = 48000, TAIL = 3, len = LOOP * SR;
+  ac = new OfflineAudioContext(2, SR * (LOOP + TAIL), SR);
+  buildGraph();
+  recording = false;
+  for (let i = 0; i < (LOOP + TAIL) / EIGHTH; i++) music(i % STEPS, i * EIGHTH);
+  for (const [k, a, t] of events) sfx(k, a, t);
+  const buf = await ac.startRendering();
+  const L = buf.getChannelData(0), R = buf.getChannelData(1);
+  // fold the tail back onto the start so the loop is seamless
+  for (let i = len; i < L.length; i++) { L[i - len] += L[i]; R[i - len] += R[i]; }
+  const out = new DataView(new ArrayBuffer(44 + len * 4));
+  const str = (o, x) => { for (let i = 0; i < x.length; i++) out.setUint8(o + i, x.charCodeAt(i)); };
+  str(0, "RIFF"); out.setUint32(4, 36 + len * 4, true); str(8, "WAVE"); str(12, "fmt ");
+  out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 2, true);
+  out.setUint32(24, SR, true); out.setUint32(28, SR * 4, true); out.setUint16(32, 4, true); out.setUint16(34, 16, true);
+  str(36, "data"); out.setUint32(40, len * 4, true);
+  for (let i = 0; i < len; i++) {
+    out.setInt16(44 + i * 4, Math.max(-1, Math.min(1, L[i])) * 32767, true);
+    out.setInt16(46 + i * 4, Math.max(-1, Math.min(1, R[i])) * 32767, true);
+  }
+  return new Blob([out], { type: "audio/wav" });
+}
+
+// ---------- input ----------
+function toCanvas(e) {
+  const b = cv.getBoundingClientRect();
+  return [(e.clientX - b.left) * S / b.width, (e.clientY - b.top) * H / b.height];
+}
+// the hand's reach along the diagonal, in units
+const handAt = (px, py) => Math.max(0.6, Math.min(MAXN + 0.4, ((px - X0) + (py - Y0)) / 2 / U));
+function stopDemo() {
+  if (!demo) return;
+  demo = false;
+  notch = hand = n;
+}
+cv.addEventListener("pointerdown", e => {
+  audioInit();
+  const [px, py] = toCanvas(e);
+  if (py < 190) return;
+  stopDemo();
+  cv.setPointerCapture(e.pointerId);
+  drag = true;
+  hand = handAt(px, py);
+});
+cv.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const [px, py] = toCanvas(e);
+  hand = handAt(px, py);
+});
+function release() {
+  if (!drag) return;
+  // it goes where the hand let go, however far behind the heavy knob still is
+  notch = Math.max(1, Math.min(MAXN, Math.round(hand)));
+  drag = false;
+}
+cv.addEventListener("pointerup", release);
+cv.addEventListener("pointercancel", release);
+cv.addEventListener("keydown", e => {
+  const m = { ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1 }[e.key];
+  if (!m) return;
+  e.preventDefault();
+  audioInit();
+  stopDemo();
+  notch = Math.max(1, Math.min(MAXN, notch + m));
+});
+document.getElementById("btn-replay").onclick = () => {
+  demo = !reduced;
+  loopStart = clock;
+};
+const btnPause = document.getElementById("btn-pause");
+btnPause.onclick = () => {
+  paused = !paused;
+  btnPause.textContent = paused ? "Play" : "Pause";
+};
+
+// start: one settled "one", or four settled layers for reduced motion
+const startN = reduced ? 4 : 1;
+for (let k = 1; k <= startN; k++) { app[k] = 1; landed[k] = 1; }
+n = pos = hand = notch = startN;
+if (reduced) caption = "square again";
+say();
+Promise.all([document.fonts.load(`700 66px "Gaegu"`), document.fonts.load(`400 24px "Gaegu"`)]).finally(() => {
+  if (!new URLSearchParams(location.search).has("render")) { requestAnimationFrame(frame); return; }
+  const tool = document.createElement("script");
+  tool.src = "../design/tools/export-page.js";
+  tool.onload = render;
+  document.head.append(tool);
+});
+</script>
+</body>
+</html>
